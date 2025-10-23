@@ -1,0 +1,117 @@
+# ============================
+# 1. Imports
+# ============================
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from tensorflow.keras.utils import normalize
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Conv2DTranspose, concatenate
+from tensorflow.keras.optimizers import Adam
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+
+# ============================
+# 2. Paths
+# ============================
+IMAGE_DIR = "/kaggle/input/crack-dataset/train/images/"
+MASK_DIR  = "/kaggle/input/crack-dataset/train/masks/"
+
+IMG_HEIGHT = 128
+IMG_WIDTH  = 128
+IMG_CHANNELS = 3
+
+# ============================
+# 3. Load Images & Masks
+# ============================
+images = sorted(os.listdir(IMAGE_DIR))
+masks  = sorted(os.listdir(MASK_DIR))
+
+X = []
+Y = []
+
+for img_name, mask_name in zip(images, masks):
+    img = load_img(os.path.join(IMAGE_DIR, img_name), target_size=(IMG_HEIGHT, IMG_WIDTH))
+    img = img_to_array(img)
+    img = img / 255.0
+    X.append(img)
+
+    mask = load_img(os.path.join(MASK_DIR, mask_name), target_size=(IMG_HEIGHT, IMG_WIDTH), color_mode="grayscale")
+    mask = img_to_array(mask)
+    mask = mask / 255.0
+    Y.append(mask)
+
+X = np.array(X)
+Y = np.array(Y)
+
+print("Dataset shape:", X.shape, Y.shape)
+
+# ============================
+# 4. Train-Test Split
+# ============================
+X_train, X_test, Y_train, Y_test = train_test_split(X, Y, test_size=0.2, random_state=42)
+
+# ============================
+# 5. U-Net Model
+# ============================
+def unet_model(input_size=(IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS)):
+    inputs = Input(input_size)
+
+    # Encoder
+    c1 = Conv2D(64, 3, activation="relu", padding="same")(inputs)
+    c1 = Conv2D(64, 3, activation="relu", padding="same")(c1)
+    p1 = MaxPooling2D((2,2))(c1)
+
+    c2 = Conv2D(128, 3, activation="relu", padding="same")(p1)
+    c2 = Conv2D(128, 3, activation="relu", padding="same")(c2)
+    p2 = MaxPooling2D((2,2))(c2)
+
+    c3 = Conv2D(256, 3, activation="relu", padding="same")(p2)
+    c3 = Conv2D(256, 3, activation="relu", padding="same")(c3)
+    p3 = MaxPooling2D((2,2))(c3)
+
+    # Bottleneck
+    c4 = Conv2D(512, 3, activation="relu", padding="same")(p3)
+    c4 = Conv2D(512, 3, activation="relu", padding="same")(c4)
+
+    # Decoder
+    u5 = Conv2DTranspose(256, (2,2), strides=(2,2), padding="same")(c4)
+    u5 = concatenate([u5, c3])
+    c5 = Conv2D(256, 3, activation="relu", padding="same")(u5)
+    c5 = Conv2D(256, 3, activation="relu", padding="same")(c5)
+
+    u6 = Conv2DTranspose(128, (2,2), strides=(2,2), padding="same")(c5)
+    u6 = concatenate([u6, c2])
+    c6 = Conv2D(128, 3, activation="relu", padding="same")(u6)
+    c6 = Conv2D(128, 3, activation="relu", padding="same")(c6)
+
+    u7 = Conv2DTranspose(64, (2,2), strides=(2,2), padding="same")(c6)
+    u7 = concatenate([u7, c1])
+    c7 = Conv2D(64, 3, activation="relu", padding="same")(u7)
+    c7 = Conv2D(64, 3, activation="relu", padding="same")(c7)
+
+    outputs = Conv2D(1, (1,1), activation="sigmoid")(c7)
+
+    model = Model(inputs, outputs)
+    return model
+
+model = unet_model()
+model.compile(optimizer=Adam(), loss="binary_crossentropy", metrics=["accuracy"])
+model.summary()
+
+# ============================
+# 6. Train Model
+# ============================
+history = model.fit(X_train, Y_train, 
+                    validation_data=(X_test, Y_test),
+                    batch_size=8, 
+                    epochs=50)
+
+# Save model
+model.save("unet_crack_localization.h5")
+
+# ============================
+# 7. Evaluate
+# ============================
+loss, acc = model.evaluate(X_test, Y_test)
+print(f"Test Loss: {loss:.4f}, Test Accuracy: {acc:.4f}")
