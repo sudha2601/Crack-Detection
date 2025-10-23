@@ -1,0 +1,134 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter
+
+# -------------------------------
+# 1️⃣ Load U-Net Model
+# -------------------------------
+model_path = "/kaggle/input/unet-crack-model/unet_crack_localization (2) (1).h5"
+model = tf.keras.models.load_model(model_path)
+IMG_SIZE = model.input_shape[1]
+print(f"✅ Model loaded successfully ({IMG_SIZE}x{IMG_SIZE})")
+
+# -------------------------------
+# 2️⃣ Pre/Post-processing Helpers
+# -------------------------------
+def preprocess_frame(frame):
+    img_resized = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
+    img_norm = img_resized / 255.0
+    return np.expand_dims(img_norm, axis=0)
+
+def postprocess_mask(pred_mask, original_shape):
+    if pred_mask.ndim == 3:
+        pred_mask = pred_mask[..., 0]
+    mask = (pred_mask * 255).astype(np.uint8)
+    mask = cv2.resize(mask, (original_shape[1], original_shape[0]))
+    return mask
+
+# -------------------------------
+# 3️⃣ Input / Output Setup
+# -------------------------------
+video_path = "/kaggle/input/video-3/7830152-uhd_2160_3840_30fps.mp4"
+output_path = "/kaggle/working/output_crack_detection_with_width.mp4"
+
+cap = cv2.VideoCapture(video_path)
+fps = cap.get(cv2.CAP_PROP_FPS)
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+print(f"🎥 Processing {frame_count} frames at {fps:.1f} FPS...")
+
+# -------------------------------
+# 4️⃣ Post-processing setup
+# -------------------------------
+smooth_mask = None
+alpha = 0.7  # temporal smoothing
+kernel = np.ones((3, 3), np.uint8)
+min_area = 100  # minimum crack area
+PIXEL_TO_MM = 0.1  # adjust based on calibration (example: 1 pixel = 0.1 mm)
+
+# -------------------------------
+# 5️⃣ Frame-by-frame Processing
+# -------------------------------
+for _ in tqdm(range(frame_count)):
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # --- Preprocess & Predict ---
+    img_input = preprocess_frame(frame)
+    pred_mask = model.predict(img_input, verbose=0)[0]
+    mask = postprocess_mask(pred_mask, frame.shape).astype(np.float32)
+
+    # --- Gaussian smoothing ---
+    mask = gaussian_filter(mask, sigma=2)
+
+    # --- Temporal smoothing ---
+    if smooth_mask is None:
+        smooth_mask = mask
+    else:
+        smooth_mask = alpha * smooth_mask + (1 - alpha) * mask
+
+    # --- Threshold + Morphology ---
+    mask_bin = (smooth_mask > 128).astype(np.uint8) * 255
+    mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_OPEN, kernel)
+    mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, kernel)
+
+    # --- Contour filtering ---
+    contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    final_mask = np.zeros_like(mask_bin)
+    overlay = frame.copy()
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) < min_area:
+            continue
+
+        # Draw filled contour
+        cv2.drawContours(final_mask, [cnt], -1, 255, -1)
+
+        # Compute rotated bounding box for accurate width
+        rect = cv2.minAreaRect(cnt)
+        (cx, cy), (w, h), angle = rect
+        crack_width_px = min(w, h)
+        crack_width_mm = crack_width_px * PIXEL_TO_MM
+
+        # Draw bounding box and label
+        box = cv2.boxPoints(rect)
+        box = np.int0(box)
+        cv2.drawContours(overlay, [box], 0, (0, 255, 0), 2)
+        cv2.putText(
+            overlay, f"{crack_width_mm:.2f} mm",
+            (int(cx), int(cy)), cv2.FONT_HERSHEY_SIMPLEX,
+            0.7, (255, 255, 0), 2
+        )
+
+    # --- Blend overlay ---
+    overlay[final_mask == 255] = [0, 0, 255]
+    result = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
+
+    out.write(result)
+
+cap.release()
+out.release()
+print(f"✅ Crack detection + width completed! Output saved at: {output_path}")
+
+# -------------------------------
+# 6️⃣ Preview few frames
+# -------------------------------
+cap = cv2.VideoCapture(output_path)
+for i in range(3):
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    plt.figure(figsize=(10, 5))
+    plt.imshow(frame_rgb)
+    plt.axis("off")
+    plt.title(f"Width-detected Frame {i+1}")
+    plt.show()
+cap.release()
