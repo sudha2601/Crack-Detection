@@ -64,8 +64,3 @@ pip install tensorflow numpy opencv-python matplotlib scikit-learn tqdm
 
 ---
 
-## 👨‍💻 Author
-
-**Sudhanshu Songire**
-GitHub: [github.com/yourusername](https://github.com/yourusername)
-LinkedIn: [linkedin.com/in/sudhanshu-songire](https://linkedin.com/in/sudhanshu-songire)
